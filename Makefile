@@ -123,6 +123,8 @@ check: $(TARGET)
 	./$(TARGET) tree $(TEST_IMG) /
 	@echo "12. Superblock dump..."
 	./$(TARGET) dump $(TEST_IMG)
+	@echo "13. Regression suite..."
+	./tests/test_regress.sh
 	@-rm -f $(TEST_IMG) /tmp/aleqfs_content.txt
 	@echo "=== All AleQFS tests passed ==="
 

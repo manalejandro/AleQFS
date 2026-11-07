@@ -3,9 +3,11 @@
 
 #ifdef __KERNEL__
 #include <linux/types.h>
+#include <linux/stddef.h>
 #define ALEQFS_ATTR __attribute__((packed))
 #else
 #include <stdint.h>
+#include <stddef.h>
 #define ALEQFS_ATTR __attribute__((packed))
 #endif
 
@@ -13,7 +15,7 @@
 #define ALEQFS_FS_VERSION      2
 #define ALEQFS_BLOCK_SIZE      4096
 #define ALEQFS_INODE_SIZE      256
-#define ALEQFS_INODES_PER_BLK  (ALEFS_BLOCK_SIZE / ALEQFS_INODE_SIZE)
+#define ALEQFS_INODES_PER_BLK  (ALEQFS_BLOCK_SIZE / ALEQFS_INODE_SIZE)
 #define ALEQFS_NR_EXTENTS      4
 #define ALEQFS_MAX_NAME        255
 #define ALEQFS_ROOT_INO        1
@@ -118,5 +120,13 @@ struct aleqfs_direntry {
 
 #define ALEQFS_DIR_ENTRY_MIN (sizeof(struct aleqfs_direntry))
 #define ALEQFS_DIR_ENTRY_MAX (ALEQFS_DIR_ENTRY_MIN + ALEQFS_MAX_NAME)
+
+/* grover slot flags */
+#define ALEQFS_GROVER_F_USED 0x0001u
+#define ALEQFS_GROVER_F_TOMB 0x8000u /* deleted key (open-addressing tombstone) */
+
+#define ALEQFS_GROVER_HEADER_SIZE offsetof(struct aleqfs_grover_node, slots)
+#define ALEQFS_GROVER_SLOTS_PER_BLK \
+    ((ALEQFS_BLOCK_SIZE - ALEQFS_GROVER_HEADER_SIZE) / sizeof(struct aleqfs_grover_slot))
 
 #endif

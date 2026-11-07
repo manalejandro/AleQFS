@@ -1,7 +1,32 @@
 #include "aleqfs.h"
+#include <errno.h>
 
-#define ENTANGLE_BLOCKS        16
-#define ENTANGLE_RECORDS_PER_BLK (ALEQFS_BLOCK_SIZE / sizeof(struct aleqfs_entanglement_record))
+#define ENTANGLE_MAX_BLOCKS 64
+#define ENTANGLE_RECORDS_PER_BLK \
+    (ALEQFS_BLOCK_SIZE / sizeof(struct aleqfs_entanglement_record))
+
+static int entangle_region_ok(struct aleqfs_dev *dev)
+{
+    if (dev->sb.entanglement_blocks == 0 ||
+        dev->sb.entanglement_blocks > ENTANGLE_MAX_BLOCKS)
+        return 0;
+    if (!aleqfs_block_sane(dev, dev->sb.entanglement_start))
+        return 0;
+    if (dev->sb.entanglement_start + dev->sb.entanglement_blocks >
+        dev->sb.total_blocks)
+        return 0;
+    return 1;
+}
+
+static int entangle_ino_ok(struct aleqfs_dev *dev, uint64_t ino)
+{
+    struct aleqfs_inode inode;
+    if (ino == 0 || ino > dev->sb.inode_count)
+        return 0;
+    if (aleqfs_inode_read(dev, ino, &inode) != 0)
+        return 0;
+    return inode.mode != 0;
+}
 
 int aleqfs_entangle(struct aleqfs_dev *dev, uint64_t ino_a, uint64_t ino_b, uint64_t ops)
 {
@@ -13,10 +38,16 @@ int aleqfs_entangle(struct aleqfs_dev *dev, uint64_t ino_a, uint64_t ino_b, uint
     int found = 0;
     int ret;
 
+    if (!entangle_region_ok(dev))
+        return -EINVAL;
     if (ino_a == 0 || ino_b == 0 || ino_a == ino_b)
-        return -1;
+        return -EINVAL;
+    if (!entangle_ino_ok(dev, ino_a) || !entangle_ino_ok(dev, ino_b))
+        return -ENOENT;
 
-    for (uint64_t b = 0; b < ENTANGLE_BLOCKS && !found; b++) {
+    uint64_t nblocks = dev->sb.entanglement_blocks;
+
+    for (uint64_t b = 0; b < nblocks && !found; b++) {
         ret = aleqfs_dev_read(dev, start + b, buf);
         if (ret < 0)
             return ret;
@@ -42,7 +73,7 @@ int aleqfs_entangle(struct aleqfs_dev *dev, uint64_t ino_a, uint64_t ino_b, uint
 
     if (!found) {
         if (free_block < 0)
-            return -3;
+            return -ENOSPC;
 
         ret = aleqfs_dev_read(dev, start + (uint64_t)free_block, buf);
         if (ret < 0)
@@ -88,7 +119,12 @@ int aleqfs_entangle_break(struct aleqfs_dev *dev, uint64_t ino_a, uint64_t ino_b
     struct aleqfs_entanglement_record *recs;
     int ret;
 
-    for (uint64_t b = 0; b < ENTANGLE_BLOCKS; b++) {
+    if (!entangle_region_ok(dev))
+        return -EINVAL;
+
+    uint64_t nblocks = dev->sb.entanglement_blocks;
+
+    for (uint64_t b = 0; b < nblocks; b++) {
         ret = aleqfs_dev_read(dev, start + b, buf);
         if (ret < 0)
             return ret;
@@ -125,47 +161,57 @@ int aleqfs_entangle_break(struct aleqfs_dev *dev, uint64_t ino_a, uint64_t ino_b
         }
     }
 
-    return -2;
+    return -ENOENT;
 }
 
 int aleqfs_entangle_mirror(struct aleqfs_dev *dev, uint64_t src_ino,
-                            uint64_t *mirror_ino)
+                           uint64_t *mirror_ino)
 {
     uint64_t start = dev->sb.entanglement_start;
     uint8_t buf[ALEQFS_BLOCK_SIZE];
     struct aleqfs_entanglement_record *recs;
     int ret;
 
-    for (uint64_t b = 0; b < ENTANGLE_BLOCKS; b++) {
+    if (!entangle_region_ok(dev))
+        return -EINVAL;
+
+    uint64_t nblocks = dev->sb.entanglement_blocks;
+
+    for (uint64_t b = 0; b < nblocks; b++) {
         ret = aleqfs_dev_read(dev, start + b, buf);
         if (ret < 0)
             return ret;
 
         recs = (struct aleqfs_entanglement_record *)buf;
         for (uint64_t i = 0; i < ENTANGLE_RECORDS_PER_BLK; i++) {
-            if (recs[i].ino_a == src_ino) {
+            if (recs[i].ino_a == src_ino && recs[i].ino_b != 0) {
                 *mirror_ino = recs[i].ino_b;
                 return 0;
             }
-            if (recs[i].ino_b == src_ino) {
+            if (recs[i].ino_b == src_ino && recs[i].ino_a != 0) {
                 *mirror_ino = recs[i].ino_a;
                 return 0;
             }
         }
     }
 
-    return -2;
+    return -ENOENT;
 }
 
 int aleqfs_entanglement_read(struct aleqfs_dev *dev, uint64_t ino,
-                              struct aleqfs_entanglement_record *rec)
+                             struct aleqfs_entanglement_record *rec)
 {
     uint64_t start = dev->sb.entanglement_start;
     uint8_t buf[ALEQFS_BLOCK_SIZE];
     struct aleqfs_entanglement_record *recs;
     int ret;
 
-    for (uint64_t b = 0; b < ENTANGLE_BLOCKS; b++) {
+    if (!entangle_region_ok(dev))
+        return -EINVAL;
+
+    uint64_t nblocks = dev->sb.entanglement_blocks;
+
+    for (uint64_t b = 0; b < nblocks; b++) {
         ret = aleqfs_dev_read(dev, start + b, buf);
         if (ret < 0)
             return ret;
@@ -179,5 +225,5 @@ int aleqfs_entanglement_read(struct aleqfs_dev *dev, uint64_t ino,
         }
     }
 
-    return -2;
+    return -ENOENT;
 }

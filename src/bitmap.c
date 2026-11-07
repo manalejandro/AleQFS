@@ -7,11 +7,27 @@
 static uint8_t bitmap_cache[ALEQFS_BITMAP_BLOCKS][ALEQFS_BLOCK_SIZE];
 static bool bitmap_dirty[ALEQFS_BITMAP_BLOCKS];
 static bool bitmap_loaded[ALEQFS_BITMAP_BLOCKS];
+static struct aleqfs_dev *bitmap_owner;
+
+/*
+ * The cache is process-global; make sure it belongs to the device we are
+ * operating on. Bitmap blocks are written through on every mutation, so
+ * dropping a stale cache is always safe.
+ */
+static void bitmap_ensure_owner(struct aleqfs_dev *dev)
+{
+    if (bitmap_owner != dev) {
+        memset(bitmap_loaded, 0, sizeof(bitmap_loaded));
+        memset(bitmap_dirty, 0, sizeof(bitmap_dirty));
+        bitmap_owner = dev;
+    }
+}
 
 static int bitmap_load(struct aleqfs_dev *dev, uint64_t blk_idx)
 {
     if (blk_idx >= ALEQFS_BITMAP_BLOCKS)
         return -EINVAL;
+    bitmap_ensure_owner(dev);
     if (bitmap_loaded[blk_idx])
         return 0;
     int ret = aleqfs_dev_read(dev, dev->sb.bitmap_start + blk_idx,
@@ -59,6 +75,7 @@ static int bitmap_save_all(struct aleqfs_dev *dev)
 
 int aleqfs_bitmap_init(struct aleqfs_dev *dev)
 {
+    bitmap_ensure_owner(dev);
     memset(bitmap_loaded, 0, sizeof(bitmap_loaded));
     memset(bitmap_dirty, 0, sizeof(bitmap_dirty));
     for (uint64_t i = 0; i < ALEQFS_BITMAP_BLOCKS; i++) {
@@ -70,6 +87,8 @@ int aleqfs_bitmap_init(struct aleqfs_dev *dev)
     uint64_t data_start = dev->sb.data_start;
     for (uint64_t blk = 0; blk < data_start; blk++) {
         uint64_t bb = blk / BITS_PER_BLK;
+        if (bb >= ALEQFS_BITMAP_BLOCKS)
+            break;
         uint64_t off = blk % BITS_PER_BLK;
         uint64_t byte_off = off / 8;
         uint8_t bit = 1 << (off % 8);
@@ -100,7 +119,8 @@ int aleqfs_bitmap_alloc(struct aleqfs_dev *dev, uint64_t *block)
             bitmap_cache[bb][byte_off] |= bit;
             bitmap_dirty[bb] = true;
             bitmap_save(dev, bb);
-            dev->sb.free_blocks--;
+            if (dev->sb.free_blocks > 0)
+                dev->sb.free_blocks--;
             dev->dirty = true;
             *block = blk;
             return 0;
@@ -112,7 +132,7 @@ int aleqfs_bitmap_alloc(struct aleqfs_dev *dev, uint64_t *block)
 
 int aleqfs_bitmap_free(struct aleqfs_dev *dev, uint64_t block)
 {
-    if (block >= dev->sb.total_blocks)
+    if (!aleqfs_block_sane(dev, block))
         return 0;
 
     uint64_t bb = block / BITS_PER_BLK;
@@ -126,6 +146,9 @@ int aleqfs_bitmap_free(struct aleqfs_dev *dev, uint64_t block)
     uint64_t off = block % BITS_PER_BLK;
     uint64_t byte_off = off / 8;
     uint8_t bit = 1 << (off % 8);
+
+    if (!(bitmap_cache[bb][byte_off] & bit))
+        return 0; /* double free: ignore, keep counters consistent */
 
     bitmap_cache[bb][byte_off] &= ~bit;
     bitmap_dirty[bb] = true;
@@ -145,6 +168,7 @@ void aleqfs_bitmark_set(struct aleqfs_dev *dev, uint64_t block)
     if (bb >= ALEQFS_BITMAP_BLOCKS)
         return;
 
+    bitmap_ensure_owner(dev);
     if (!bitmap_loaded[bb]) {
         if (bitmap_load_all(dev) < 0)
             return;

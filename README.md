@@ -45,8 +45,8 @@ make
 # Grover search
 ./aleqfs grover /tmp/test.qfs 1
 
-# Mount (requires kernel module)
-sudo modprobe aleqfs
+# Mount (requires kernel module; Linux >= 6.3, tested up to 7.2)
+sudo modprobe aleqfs_ko        # also auto-loaded by "mount -t aleqfs"
 sudo mount -t aleqfs /tmp/test.qfs /mnt
 ```
 
@@ -54,24 +54,39 @@ sudo mount -t aleqfs /tmp/test.qfs /mnt
 
 | Command | Description |
 |---------|-------------|
-| `format <img> <size_mb>` | Create and format a new quantum image |
+| `format <img> <size_mb>` | Create and format a new quantum image (1..512 MiB) |
 | `mkfs <device> [size_mb]` | Format a device or image |
 | `ls <img> <path>` | List directory contents (quantum collapse with --collapse) |
-| `mkdir <img> <path>` | Create a directory |
-| `rmdir <img> <path>` | Remove a directory |
-| `cp-in <img> <src> <dst>` | Copy a file into the quantum image |
+| `mkdir <img> <path>` | Create a directory (fails if it already exists) |
+| `rmdir <img> <path>` | Remove an empty directory |
+| `cp-in <img> <src> <dst>` | Copy a file into the image (replaces an existing dst) |
 | `cat <img> <path>` | Display file contents |
-| `stat <img> <path>` | Show file metadata + quantum state |
-| `mv <img> <src> <dst>` | Rename |
-| `rm <img> <path>` | Remove a file |
-| `create <img> <path>` | Create an empty file |
+| `stat <img> <path>` | Show file metadata + quantum state + coherence check |
+| `mv <img> <src> <dst>` | Rename/move (replaces an existing dst file) |
+| `rm <img> <path>` | Remove a file (releases its blocks and grover key) |
+| `create <img> <path>` | Create an empty file (fails if it already exists) |
 | `tree <img> <path>` | Show directory tree (quantum collapse with --collapse) |
-| `dump <img>` | Display superblock info (quantum parameters) |
+| `dump <img>` | Display superblock info (quantum parameters + seal status) |
 | `entangle <img> <path_a> <path_b>` | Entangle two directories |
 | `observe <img> <path>` | Collapse quantum state and read |
-| `decohere <img> <path>` | Force decoherence on a file |
-| `grover <img> <pattern>` | Grover quantum search |
+| `decohere <img> <path>` | Force decoherence on a file (seal check will fail) |
+| `grover <img> <pattern>` | Grover quantum search (bitmask over indexed keys) |
 | `qstatus <img>` | Quantum system status |
+
+Notes:
+
+- The **Grover index** is populated by the CLI (`mkdir`, `create`, `cp-in`, `mv`)
+  using a 64-bit hash of the path as key and the inode number as value.
+  `grover <img> <pattern>` matches every key where `(key & pattern) == pattern`;
+  `pattern 0` lists the whole index. Files created through the mounted kernel
+  filesystem are not indexed.
+- **Decoherence detection**: `cp-in`/kernel writes seal the first data block of a
+  file with an FNV-1a checksum (`stat` reports `Coherence:`). The superblock
+  carries its own seal, verified on every load and mount.
+- Filesystem limits: 4 KiB blocks, max image size 512 MiB (allocation bitmap),
+  1024 inodes, up to 4 extents per file (each extent grows without limit while
+  physically contiguous blocks are available). Holes created by seeks are
+  zero-filled on write.
 
 ## Source Layout
 
@@ -99,7 +114,7 @@ src/
 ```bash
 make              # Release build
 make CFLAGS="-g"  # Debug build
-make check        # Run quantum test suite
+make check        # Run quantum test suite (basic + regression + corrupt-image)
 make kmod         # Build kernel module
 make deb          # Build .deb package
 make install      # Install to /usr/local
@@ -107,12 +122,33 @@ make install      # Install to /usr/local
 
 ## Kernel Module
 
+Requires Linux >= 6.3 (compiled and tested up to 7.2; DKMS rebuilds it for
+each kernel).
+
 ```bash
 sudo apt install dkms linux-headers-amd64
 sudo make deb
 sudo apt install ./pkg/aleqfs-2.0.0.deb
-sudo modprobe aleqfs
+sudo modprobe aleqfs_ko          # or just mount: the fs alias autoloads it
 sudo mount -t aleqfs /tmp/test.qfs /mnt
+```
+
+`mount.aleqfs <device>` without a mountpoint (e.g. from the bundled udev rule)
+automounts on `/media/aleqfs/<device-name>`.
+
+The kernel driver validates the superblock, geometry, checksums and every
+on-disk extent before use: corrupt or hostile images are rejected at mount
+time instead of corrupting memory. Unlinked files release their blocks and
+inode through `->evict_inode`; truncate/`O_TRUNC` is supported.
+
+## Testing
+
+```bash
+make check                 # built-in functional suite
+./tests/test_basic.sh      # CLI walkthrough
+./tests/test_regress.sh    # regressions: compaction, EEXIST, overwrite,
+                           # journal growth, grover, decoherence, corrupt images
+./tests/test_stress.sh     # 100-file creation
 ```
 
 ## Supporting file types

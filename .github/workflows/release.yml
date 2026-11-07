@@ -24,6 +24,9 @@ jobs:
       - name: Build userspace binary
         run: make
 
+      - name: Run tests
+        run: make check
+
       - name: Build .deb package
         run: make deb
 
